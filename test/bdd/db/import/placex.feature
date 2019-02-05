@@ -26,8 +26,8 @@ Feature: Import into placex
           | R1  | boundary | administrative  | 2     | de      | (-100 40, -101 40, -101 41, -100 41, -100 40) |
         When importing
         Then placex contains
-          | object | addr+country | country_code |
-          | R1     | de           | de           |
+          | object | rank_search| addr+country | country_code |
+          | R1     | 4          | de           | de           |
 
     Scenario: Illegal country code tag for countries is ignored
         Given the named places
@@ -158,9 +158,6 @@ Feature: Import into placex
           | N37  | place     | building            |
           | N38  | place     | houses              |
         And the named places
-          | osm  | class     | type      | extra+locality |
-          | N100 | place     | locality  | townland |
-        And the named places
           | osm  | class     | type      | extra+capital |
           | N101 | place     | city      | yes |
         When importing
@@ -168,10 +165,10 @@ Feature: Import into placex
           | object | rank_search | rank_address |
           | N1     | 30          | 30 |
           | N11    | 30          | 30 |
-          | N12    | 2           | 2 |
+          | N12    | 2           | 0 |
           | N13    | 2           | 0 |
-          | N14    | 4           | 4 |
-          | N15    | 8           | 8 |
+          | N14    | 4           | 0 |
+          | N15    | 8           | 0 |
           | N16    | 18          | 0 |
           | N17    | 12          | 12 |
           | N18    | 16          | 16 |
@@ -191,7 +188,6 @@ Feature: Import into placex
           | N32    | 20          | 0 |
           | N33    | 20          | 0 |
           | N34    | 20          | 0 |
-          | N100   | 20          | 20 |
           | N101   | 15          | 16 |
           | N35    | 22          | 22 |
           | N36    | 30          | 30 |
@@ -211,6 +207,10 @@ Feature: Import into placex
           | R21 | boundary | administrative | 32    | (3 3, 4 4, 3 4, 3 3) |
           | R22 | boundary | nature_park    | 6     | (0 0, 1 0, 0 1, 0 0) |
           | R23 | boundary | natural_reserve| 10    | (0 0, 1 1, 1 0, 0 0) |
+        And the named places
+          | osm | class | type    | geometry |
+          | R40 | place | country | (1 1, 2 2, 1 2, 1 1) |
+          | R41 | place | state   | (3 3, 4 4, 3 4, 3 3) |
         When importing
         Then placex has no entry for N1
         And placex has no entry for W10
@@ -218,8 +218,10 @@ Feature: Import into placex
           | object | rank_search | rank_address |
           | R20    | 4           | 4 |
           | R21    | 30          | 30 |
-          | R22    | 12          | 0 |
-          | R23    | 20          | 0 |
+          | R22    | 30          | 30 |
+          | R23    | 30          | 30 |
+          | R40    | 4           | 4 |
+          | R41    | 8           | 8 |
 
     Scenario: search and address ranks for highways correctly assigned
         Given the scene roads-with-pois
@@ -237,7 +239,7 @@ Feature: Import into placex
         When importing
         Then placex contains
           | object | rank_search | rank_address |
-          | N1     | 30          | 30 |
+          | N1     | 30          |  0 |
           | W1     | 26          | 26 |
           | W2     | 26          | 26 |
           | W3     | 26          | 26 |
@@ -258,11 +260,11 @@ Feature: Import into placex
         When importing
         Then placex contains
           | object | rank_search | rank_address |
-          | N2     | 30          | 30 |
-          | W2     | 30          | 30 |
+          | N2     | 30          |  0 |
+          | W2     | 30          |  0 |
           | W4     | 22          | 22 |
           | R2     | 22          | 22 |
-          | R3     | 22          | 0 |
+          | R3     | 22          |  0 |
 
     Scenario: rank and inclusion of naturals
        Given the named places
@@ -286,8 +288,27 @@ Feature: Import into placex
           | N5     | 30          | 30 |
           | W2     | 18          | 0 |
           | R3     | 18          | 0 |
-          | R4     | 22          | 0 |
-          | R5     | 4           | 4 |
-          | R6     | 4           | 4 |
+          | R4     | 30          | 30 |
+          | R5     | 4           | 0 |
+          | R6     | 4           | 0 |
           | W3     | 30          | 30 |
 
+    Scenario: boundary ways for countries and states are ignored
+        Given the named places
+          | osm | class    | type           | admin | geometry |
+          | W4  | boundary | administrative | 2     | poly-area:0.1 |
+          | R4  | boundary | administrative | 2     | poly-area:0.1 |
+          | W5  | boundary | administrative | 3     | poly-area:0.1 |
+          | R5  | boundary | administrative | 3     | poly-area:0.1 |
+          | W6  | boundary | administrative | 4     | poly-area:0.1 |
+          | R6  | boundary | administrative | 4     | poly-area:0.1 |
+          | W7  | boundary | administrative | 5     | poly-area:0.1 |
+          | R7  | boundary | administrative | 5     | poly-area:0.1 |
+       When importing
+       Then placex contains exactly
+           | object |
+           | R4     |
+           | R5     |
+           | R6     |
+           | W7     |
+           | R7     |

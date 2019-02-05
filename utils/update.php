@@ -1,10 +1,9 @@
-#!@PHP_BIN@ -Cq
 <?php
 
-require_once(dirname(dirname(__FILE__)).'/settings/settings.php');
 require_once(CONST_BasePath.'/lib/init-cmd.php');
 require_once(CONST_BasePath.'/lib/setup_functions.php');
 require_once(CONST_BasePath.'/lib/setup/SetupClass.php');
+require_once(CONST_BasePath.'/lib/setup/AddressLevelParser.php');
 
 ini_set('memory_limit', '800M');
 
@@ -42,6 +41,7 @@ $aCMDOptions
 
    array('deduplicate', '', 0, 1, 0, 0, 'bool', 'Deduplicate tokens'),
    array('recompute-word-counts', '', 0, 1, 0, 0, 'bool', 'Compute frequency of full-word search terms'),
+   array('update-address-levels', '', 0, 1, 0, 0, 'bool', 'Reimport address level configuration (EXPERT)'),
    array('no-npi', '', 0, 1, 0, 0, 'bool', '(obsolete)'),
   );
 
@@ -63,7 +63,7 @@ if ($iCacheMemory + 500 > getTotalMemoryMB()) {
     $iCacheMemory = getCacheMemoryMB();
     echo "WARNING: resetting cache memory to $iCacheMemory\n";
 }
-$sOsm2pgsqlCmd = CONST_Osm2pgsql_Binary.' -klas --number-processes 1 -C '.$iCacheMemory.' -O gazetteer -d '.$aDSNInfo['database'].' -P '.$aDSNInfo['port'];
+$sOsm2pgsqlCmd = CONST_Osm2pgsql_Binary.' -klas --number-processes 1 -C '.$iCacheMemory.' -O gazetteer -S '.CONST_Import_Style.' -d '.$aDSNInfo['database'].' -P '.$aDSNInfo['port'];
 if (isset($aDSNInfo['username']) && $aDSNInfo['username']) {
     $sOsm2pgsqlCmd .= ' -U ' . $aDSNInfo['username'];
 }
@@ -110,6 +110,7 @@ if ($aResult['init-updates']) {
                                       'enable-diff-updates' => true,
                                       'verbose' => $aResult['verbose']
                                      ));
+        $cSetup->connect();
         $cSetup->createFunctions();
     }
 
@@ -304,6 +305,14 @@ if ($aResult['index']) {
     }
 
     runWithEnv($sCmd, $aProcEnv);
+
+    $oDB->query('update import_status set indexed = true');
+}
+
+if ($aResult['update-address-levels']) {
+    echo 'Updating address levels from '.CONST_Address_Level_Config.".\n";
+    $oAlParser = new \Nominatim\Setup\AddressLevelParser(CONST_Address_Level_Config);
+    $oAlParser->createTable($oDB, 'address_levels');
 }
 
 if ($aResult['import-osmosis'] || $aResult['import-osmosis-all']) {
@@ -427,7 +436,7 @@ if ($aResult['import-osmosis'] || $aResult['import-osmosis-all']) {
 
             $sSQL = 'INSERT INTO import_osmosis_log';
             $sSQL .= '(batchend, batchseq, batchsize, starttime, endtime, event)';
-            $sSQL .= " values ('$sBatchEnd',$iEndSequence,$iFileSize,'";
+            $sSQL .= " values ('$sBatchEnd',$iEndSequence,NULL,'";
             $sSQL .= date('Y-m-d H:i:s', $fCMDStartTime)."','";
             $sSQL .= date('Y-m-d H:i:s')."','index')";
             var_Dump($sSQL);
@@ -436,6 +445,11 @@ if ($aResult['import-osmosis'] || $aResult['import-osmosis-all']) {
 
             $sSQL = 'update import_status set indexed = true';
             $oDB->query($sSQL);
+        } else {
+            if ($aResult['import-osmosis-all']) {
+                echo "Error: --no-index cannot be used with continuous imports (--import-osmosis-all).\n";
+                exit(1);
+            }
         }
 
         $fDuration = time() - $fStartTime;

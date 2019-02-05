@@ -2,19 +2,20 @@
 
 namespace Nominatim\Setup;
 
+require_once(CONST_BasePath.'/lib/setup/AddressLevelParser.php');
+
 class SetupFunctions
 {
-    protected $iCacheMemory;            // set in constructor
-    protected $iInstances;              // set in constructor
-    protected $sModulePath;             // set in constructor
-    protected $aDSNInfo;                // set in constructor = DB::parseDSN(CONST_Database_DSN);
-    protected $sVerbose;                // set in constructor
-    protected $sIgnoreErrors;           // set in constructor
-    protected $bEnableDiffUpdates;      // set in constructor
-    protected $bEnableDebugStatements;  // set in constructor
-    protected $bNoPartitions;           // set in constructor
-    protected $oDB = null;              // set in setupDB (earliest) or later in loadData, importData, drop, createSqlFunctions, importTigerData
-                                                // pgsqlRunPartitionScript, calculatePostcodes, ..if no already set
+    protected $iCacheMemory;
+    protected $iInstances;
+    protected $sModulePath;
+    protected $aDSNInfo;
+    protected $bVerbose;
+    protected $sIgnoreErrors;
+    protected $bEnableDiffUpdates;
+    protected $bEnableDebugStatements;
+    protected $bNoPartitions;
+    protected $oDB = null;
 
     public function __construct(array $aCMDResult)
     {
@@ -38,12 +39,14 @@ class SetupFunctions
         $this->sModulePath = CONST_Database_Module_Path;
         info('module path: ' . $this->sModulePath);
 
-        // prepares DB for import or update, sets the Data Source Name
-        $this->aDSNInfo = \DB::parseDSN(CONST_Database_DSN);
-        if (!isset($this->aDSNInfo['port']) || !$this->aDSNInfo['port']) $this->aDSNInfo['port'] = 5432;
+        // parse database string
+        $this->aDSNInfo = array_filter(\DB::parseDSN(CONST_Database_DSN));
+        if (!isset($this->aDSNInfo['port'])) {
+            $this->aDSNInfo['port'] = 5432;
+        }
 
         // setting member variables based on command line options stored in $aCMDResult
-        $this->sVerbose = $aCMDResult['verbose'];
+        $this->bVerbose = $aCMDResult['verbose'];
 
         //setting default values which are not set by the update.php array
         if (isset($aCMDResult['ignore-errors'])) {
@@ -77,32 +80,31 @@ class SetupFunctions
         }
 
         $sCreateDBCmd = 'createdb -E UTF-8 -p '.$this->aDSNInfo['port'].' '.$this->aDSNInfo['database'];
-        if (isset($this->aDSNInfo['username']) && $this->aDSNInfo['username']) {
+        if (isset($this->aDSNInfo['username'])) {
             $sCreateDBCmd .= ' -U '.$this->aDSNInfo['username'];
         }
 
-        if (isset($this->aDSNInfo['hostspec']) && $this->aDSNInfo['hostspec']) {
+        if (isset($this->aDSNInfo['hostspec'])) {
             $sCreateDBCmd .= ' -h '.$this->aDSNInfo['hostspec'];
         }
 
-        $aProcEnv = null;
-        if (isset($this->aDSNInfo['password']) && $this->aDSNInfo['password']) {
-            $aProcEnv = array_merge(array('PGPASSWORD' => $this->aDSNInfo['password']), $_ENV);
-        }
-
-        $result = runWithEnv($sCreateDBCmd, $aProcEnv);
+        $result = $this->runWithPgEnv($sCreateDBCmd);
         if ($result != 0) fail('Error executing external command: '.$sCreateDBCmd);
+    }
+
+    public function connect()
+    {
+        $this->oDB =& getDB();
     }
 
     public function setupDB()
     {
         info('Setup DB');
-        $this->oDB =& getDB();
 
         $fPostgresVersion = getPostgresVersion($this->oDB);
         echo 'Postgres version found: '.$fPostgresVersion."\n";
 
-        if ($fPostgresVersion < 9.1) {
+        if ($fPostgresVersion < 9.01) {
             fail('Minimum supported version of Postgresql is 9.1.');
         }
 
@@ -150,14 +152,14 @@ class SetupFunctions
             exit(1);
         }
         $this->pgsqlRunScriptFile(CONST_BasePath.'/data/country_name.sql');
-        $this->pgsqlRunScriptFile(CONST_BasePath.'/data/country_naturalearthdata.sql');
         $this->pgsqlRunScriptFile(CONST_BasePath.'/data/country_osm_grid.sql.gz');
         $this->pgsqlRunScriptFile(CONST_BasePath.'/data/gb_postcode_table.sql');
 
-        if (file_exists(CONST_BasePath.'/data/gb_postcode_data.sql.gz')) {
-            $this->pgsqlRunScriptFile(CONST_BasePath.'/data/gb_postcode_data.sql.gz');
+        $sPostcodeFilename = CONST_BasePath.'/data/gb_postcode_data.sql.gz';
+        if (file_exists($sPostcodeFilename)) {
+            $this->pgsqlRunScriptFile($sPostcodeFilename);
         } else {
-            warn('external UK postcode table not found.');
+            warn('optional external UK postcode table file ('.$sPostcodeFilename.') not found. Skipping.');
         }
 
         if (CONST_Use_Extra_US_Postcodes) {
@@ -187,6 +189,8 @@ class SetupFunctions
             fail("osm2pgsql not found in '$osm2pgsql'");
         }
 
+        $osm2pgsql .= ' -S '.CONST_Import_Style;
+
         if (!is_null(CONST_Osm2pgsql_Flatnode_File) && CONST_Osm2pgsql_Flatnode_File) {
             $osm2pgsql .= ' --flat-nodes '.CONST_Osm2pgsql_Flatnode_File;
         }
@@ -202,19 +206,16 @@ class SetupFunctions
         $osm2pgsql .= ' -lsc -O gazetteer --hstore --number-processes 1';
         $osm2pgsql .= ' -C '.$this->iCacheMemory;
         $osm2pgsql .= ' -P '.$this->aDSNInfo['port'];
-        if (isset($this->aDSNInfo['username']) && $this->aDSNInfo['username']) {
+        if (isset($this->aDSNInfo['username'])) {
             $osm2pgsql .= ' -U '.$this->aDSNInfo['username'];
         }
-        if (isset($this->aDSNInfo['hostspec']) && $this->aDSNInfo['hostspec']) {
+        if (isset($this->aDSNInfo['hostspec'])) {
             $osm2pgsql .= ' -H '.$this->aDSNInfo['hostspec'];
         }
-        $aProcEnv = null;
-        if (isset($this->aDSNInfo['password']) && $this->aDSNInfo['password']) {
-            $aProcEnv = array_merge(array('PGPASSWORD' => $this->aDSNInfo['password']), $_ENV);
-        }
         $osm2pgsql .= ' -d '.$this->aDSNInfo['database'].' '.$sOSMFile;
-        runWithEnv($osm2pgsql, $aProcEnv);
-        if ($this->oDB == null) $this->oDB =& getDB();
+
+        $this->runWithPgEnv($osm2pgsql);
+
         if (!$this->sIgnoreErrors && !chksql($this->oDB->getRow('select * from place limit 1'))) {
             fail('No Data');
         }
@@ -232,7 +233,7 @@ class SetupFunctions
         $this->createSqlFunctions();
     }
 
-    public function createTables()
+    public function createTables($bReverseOnly = false)
     {
         info('Create Tables');
 
@@ -270,6 +271,13 @@ class SetupFunctions
         );
 
         $this->pgsqlRunScript($sTemplate, false);
+
+        if ($bReverseOnly) {
+            $this->pgExec('DROP TABLE search_name');
+        }
+
+        $oAlParser = new AddressLevelParser(CONST_Address_Level_Config);
+        $oAlParser->createTable($this->oDB, 'address_levels');
     }
 
     public function createPartitionTables()
@@ -346,43 +354,41 @@ class SetupFunctions
     {
         info('Drop old Data');
 
-        if ($this->oDB == null) $this->oDB =& getDB();
-
-        if (!pg_query($this->oDB->connection, 'TRUNCATE word')) fail(pg_last_error($this->oDB->connection));
+        $this->pgExec('TRUNCATE word');
         echo '.';
-        if (!pg_query($this->oDB->connection, 'TRUNCATE placex')) fail(pg_last_error($this->oDB->connection));
+        $this->pgExec('TRUNCATE placex');
         echo '.';
-        if (!pg_query($this->oDB->connection, 'TRUNCATE location_property_osmline')) fail(pg_last_error($this->oDB->connection));
+        $this->pgExec('TRUNCATE location_property_osmline');
         echo '.';
-        if (!pg_query($this->oDB->connection, 'TRUNCATE place_addressline')) fail(pg_last_error($this->oDB->connection));
+        $this->pgExec('TRUNCATE place_addressline');
         echo '.';
-        if (!pg_query($this->oDB->connection, 'TRUNCATE place_boundingbox')) fail(pg_last_error($this->oDB->connection));
+        $this->pgExec('TRUNCATE place_boundingbox');
         echo '.';
-        if (!pg_query($this->oDB->connection, 'TRUNCATE location_area')) fail(pg_last_error($this->oDB->connection));
+        $this->pgExec('TRUNCATE location_area');
         echo '.';
-        if (!pg_query($this->oDB->connection, 'TRUNCATE search_name')) fail(pg_last_error($this->oDB->connection));
+        if (!$this->dbReverseOnly()) {
+            $this->pgExec('TRUNCATE search_name');
+            echo '.';
+        }
+        $this->pgExec('TRUNCATE search_name_blank');
         echo '.';
-        if (!pg_query($this->oDB->connection, 'TRUNCATE search_name_blank')) fail(pg_last_error($this->oDB->connection));
+        $this->pgExec('DROP SEQUENCE seq_place');
         echo '.';
-        if (!pg_query($this->oDB->connection, 'DROP SEQUENCE seq_place')) fail(pg_last_error($this->oDB->connection));
-        echo '.';
-        if (!pg_query($this->oDB->connection, 'CREATE SEQUENCE seq_place start 100000')) fail(pg_last_error($this->oDB->connection));
+        $this->pgExec('CREATE SEQUENCE seq_place start 100000');
         echo '.';
 
         $sSQL = 'select distinct partition from country_name';
         $aPartitions = chksql($this->oDB->getCol($sSQL));
         if (!$this->bNoPartitions) $aPartitions[] = 0;
         foreach ($aPartitions as $sPartition) {
-            if (!pg_query($this->oDB->connection, 'TRUNCATE location_road_'.$sPartition)) fail(pg_last_error($this->oDB->connection));
+            $this->pgExec('TRUNCATE location_road_'.$sPartition);
             echo '.';
         }
 
         // used by getorcreate_word_id to ignore frequent partial words
         $sSQL = 'CREATE OR REPLACE FUNCTION get_maxwordfreq() RETURNS integer AS ';
         $sSQL .= '$$ SELECT '.CONST_Max_Word_Frequency.' as maxwordfreq; $$ LANGUAGE SQL IMMUTABLE';
-        if (!pg_query($this->oDB->connection, $sSQL)) {
-            fail(pg_last_error($this->oDB->connection));
-        }
+        $this->pgExec($sSQL);
         echo ".\n";
 
         // pre-create the word list
@@ -401,7 +407,7 @@ class SetupFunctions
             $sSQL .= " and not (class='place' and type='houses' and osm_type='W'";
             $sSQL .= "          and ST_GeometryType(geometry) = 'ST_LineString')";
             $sSQL .= ' and ST_IsValid(geometry)';
-            if ($this->sVerbose) echo "$sSQL\n";
+            if ($this->bVerbose) echo "$sSQL\n";
             if (!pg_send_query($aDBInstances[$i]->connection, $sSQL)) {
                 fail(pg_last_error($aDBInstances[$i]->connection));
             }
@@ -413,7 +419,7 @@ class SetupFunctions
         $sSQL .= ' (osm_id, address, linegeo)';
         $sSQL .= ' SELECT osm_id, address, geometry from place where ';
         $sSQL .= "class='place' and type='houses' and osm_type='W' and ST_GeometryType(geometry) = 'ST_LineString'";
-        if ($this->sVerbose) echo "$sSQL\n";
+        if ($this->bVerbose) echo "$sSQL\n";
         if (!pg_send_query($aDBInstances[$iLoadThreads]->connection, $sSQL)) {
             fail(pg_last_error($aDBInstances[$iLoadThreads]->connection));
         }
@@ -527,11 +533,7 @@ class SetupFunctions
     public function calculatePostcodes($bCMDResultAll)
     {
         info('Calculate Postcodes');
-        if ($this->oDB == null) $this->oDB =& getDB();
-        if (!pg_query($this->oDB->connection, 'TRUNCATE location_postcode')) {
-            fail(pg_last_error($this->oDB->connection));
-        }
-
+        $this->pgExec('TRUNCATE location_postcode');
 
         $sSQL  = 'INSERT INTO location_postcode';
         $sSQL .= ' (place_id, indexed_status, country_code, postcode, geometry) ';
@@ -542,10 +544,7 @@ class SetupFunctions
         $sSQL .= " WHERE address ? 'postcode' AND address->'postcode' NOT SIMILAR TO '%(,|;)%'";
         $sSQL .= '       AND geometry IS NOT null';
         $sSQL .= ' GROUP BY country_code, pc';
-
-        if (!pg_query($this->oDB->connection, $sSQL)) {
-            fail(pg_last_error($this->oDB->connection));
-        }
+        $this->pgExec($sSQL);
 
         if (CONST_Use_Extra_US_Postcodes) {
             // only add postcodes that are not yet available in OSM
@@ -556,7 +555,7 @@ class SetupFunctions
             $sSQL .= '  FROM us_postcode WHERE postcode NOT IN';
             $sSQL .= '        (SELECT postcode FROM location_postcode';
             $sSQL .= "          WHERE country_code = 'us')";
-            if (!pg_query($this->oDB->connection, $sSQL)) fail(pg_last_error($this->oDB->connection));
+            $this->pgExec($sSQL);
         }
 
         // add missing postcodes for GB (if available)
@@ -566,21 +565,17 @@ class SetupFunctions
         $sSQL .= '  FROM gb_postcode WHERE postcode NOT IN';
         $sSQL .= '           (SELECT postcode FROM location_postcode';
         $sSQL .= "             WHERE country_code = 'gb')";
-        if (!pg_query($this->oDB->connection, $sSQL)) fail(pg_last_error($this->oDB->connection));
+        $this->pgExec($sSQL);
 
         if (!$bCMDResultAll) {
             $sSQL = "DELETE FROM word WHERE class='place' and type='postcode'";
             $sSQL .= 'and word NOT IN (SELECT postcode FROM location_postcode)';
-            if (!pg_query($this->oDB->connection, $sSQL)) {
-                fail(pg_last_error($this->oDB->connection));
-            }
+            $this->pgExec($sSQL);
         }
+
         $sSQL = 'SELECT count(getorcreate_postcode_id(v)) FROM ';
         $sSQL .= '(SELECT distinct(postcode) as v FROM location_postcode) p';
-
-        if (!pg_query($this->oDB->connection, $sSQL)) {
-            fail(pg_last_error($this->oDB->connection));
-        }
+        $this->pgExec($sSQL);
     }
 
     public function index($bIndexNoanalyse)
@@ -588,38 +583,36 @@ class SetupFunctions
         $sOutputFile = '';
         $sBaseCmd = CONST_InstallPath.'/nominatim/nominatim -i -d '.$this->aDSNInfo['database'].' -P '
             .$this->aDSNInfo['port'].' -t '.$this->iInstances.$sOutputFile;
-        if (isset($this->aDSNInfo['hostspec']) && $this->aDSNInfo['hostspec']) {
+        if (isset($this->aDSNInfo['hostspec'])) {
             $sBaseCmd .= ' -H '.$this->aDSNInfo['hostspec'];
         }
-        if (isset($this->aDSNInfo['username']) && $this->aDSNInfo['username']) {
+        if (isset($this->aDSNInfo['username'])) {
             $sBaseCmd .= ' -U '.$this->aDSNInfo['username'];
-        }
-        $aProcEnv = null;
-        if (isset($this->aDSNInfo['password']) && $this->aDSNInfo['password']) {
-            $aProcEnv = array_merge(array('PGPASSWORD' => $this->aDSNInfo['password']), $_ENV);
         }
 
         info('Index ranks 0 - 4');
-        $iStatus = runWithEnv($sBaseCmd.' -R 4', $aProcEnv);
+        $iStatus = $this->runWithPgEnv($sBaseCmd.' -R 4');
         if ($iStatus != 0) {
             fail('error status ' . $iStatus . ' running nominatim!');
         }
         if (!$bIndexNoanalyse) $this->pgsqlRunScript('ANALYSE');
+
         info('Index ranks 5 - 25');
-        $iStatus = runWithEnv($sBaseCmd.' -r 5 -R 25', $aProcEnv);
+        $iStatus = $this->runWithPgEnv($sBaseCmd.' -r 5 -R 25');
         if ($iStatus != 0) {
             fail('error status ' . $iStatus . ' running nominatim!');
         }
         if (!$bIndexNoanalyse) $this->pgsqlRunScript('ANALYSE');
+
         info('Index ranks 26 - 30');
-        $iStatus = runWithEnv($sBaseCmd.' -r 26', $aProcEnv);
+        $iStatus = $this->runWithPgEnv($sBaseCmd.' -r 26');
         if ($iStatus != 0) {
             fail('error status ' . $iStatus . ' running nominatim!');
         }
+
         info('Index postcodes');
-        if ($this->oDB == null) $this->oDB =& getDB();
         $sSQL = 'UPDATE location_postcode SET indexed_status = 0';
-        if (!pg_query($this->oDB->connection, $sSQL)) fail(pg_last_error($this->oDB->connection));
+        $this->pgExec($sSQL);
     }
 
     public function createSearchIndices()
@@ -627,6 +620,9 @@ class SetupFunctions
         info('Create Search indices');
 
         $sTemplate = file_get_contents(CONST_BasePath.'/sql/indices.src.sql');
+        if (!$this->dbReverseOnly()) {
+            $sTemplate .= file_get_contents(CONST_BasePath.'/sql/indices_search.src.sql');
+        }
         $sTemplate = str_replace('{www-user}', CONST_Database_Web_User, $sTemplate);
         $sTemplate = $this->replaceTablespace(
             '{ts:address-index}',
@@ -696,10 +692,10 @@ class SetupFunctions
                         'new_query_log',
                         'spatial_ref_sys',
                         'country_name',
-                        'place_classtype_*'
+                        'place_classtype_*',
+                        'country_osm_grid'
                        );
 
-        if ($this->oDB = null) $this->oDB =& getDB();
         $aDropTables = array();
         $aHaveTables = chksql($this->oDB->getCol("SELECT tablename FROM pg_tables WHERE schemaname='public'"));
 
@@ -714,33 +710,31 @@ class SetupFunctions
             if (!$bFound) array_push($aDropTables, $sTable);
         }
         foreach ($aDropTables as $sDrop) {
-            if ($this->sVerbose) echo "dropping table $sDrop\n";
+            if ($this->bVerbose) echo "Dropping table $sDrop\n";
             @pg_query($this->oDB->connection, "DROP TABLE $sDrop CASCADE");
             // ignore warnings/errors as they might be caused by a table having
             // been deleted already by CASCADE
         }
 
         if (!is_null(CONST_Osm2pgsql_Flatnode_File) && CONST_Osm2pgsql_Flatnode_File) {
-            if ($sVerbose) echo 'deleting '.CONST_Osm2pgsql_Flatnode_File."\n";
-            unlink(CONST_Osm2pgsql_Flatnode_File);
+            if (file_exists(CONST_Osm2pgsql_Flatnode_File)) {
+                if ($this->bVerbose) echo 'Deleting '.CONST_Osm2pgsql_Flatnode_File."\n";
+                unlink(CONST_Osm2pgsql_Flatnode_File);
+            }
         }
     }
 
     private function pgsqlRunDropAndRestore($sDumpFile)
     {
-        if (!isset($this->aDSNInfo['port']) || !$this->aDSNInfo['port']) $this->aDSNInfo['port'] = 5432;
         $sCMD = 'pg_restore -p '.$this->aDSNInfo['port'].' -d '.$this->aDSNInfo['database'].' -Fc --clean '.$sDumpFile;
-        if (isset($this->aDSNInfo['hostspec']) && $this->aDSNInfo['hostspec']) {
+        if (isset($this->aDSNInfo['hostspec'])) {
             $sCMD .= ' -h '.$this->aDSNInfo['hostspec'];
         }
-        if (isset($this->aDSNInfo['username']) && $this->aDSNInfo['username']) {
+        if (isset($this->aDSNInfo['username'])) {
             $sCMD .= ' -U '.$this->aDSNInfo['username'];
         }
-        $aProcEnv = null;
-        if (isset($this->aDSNInfo['password']) && $this->aDSNInfo['password']) {
-            $aProcEnv = array_merge(array('PGPASSWORD' => $this->aDSNInfo['password']), $_ENV);
-        }
-        $iReturn = runWithEnv($sCMD, $aProcEnv);    // /lib/cmd.php "function runWithEnv($sCmd, $aEnv)"
+
+        $this->runWithPgEnv($sCMD);
     }
 
     private function pgsqlRunScript($sScript, $bfatal = true)
@@ -748,7 +742,7 @@ class SetupFunctions
         runSQLScript(
             $sScript,
             $bfatal,
-            $this->sVerbose,
+            $this->bVerbose,
             $this->sIgnoreErrors
         );
     }
@@ -772,13 +766,15 @@ class SetupFunctions
         if (!CONST_Use_Aux_Location_data) {
             $sTemplate = str_replace('-- %NOAUXDATA% ', '', $sTemplate);
         }
+
+        $sReverseOnly = $this->dbReverseOnly() ? 'true' : 'false';
+        $sTemplate = str_replace('%REVERSE-ONLY%', $sReverseOnly, $sTemplate);
+
         $this->pgsqlRunScript($sTemplate);
     }
 
     private function pgsqlRunPartitionScript($sTemplate)
     {
-        if ($this->oDB == null) $this->oDB =& getDB();
-
         $sSQL = 'select distinct partition from country_name';
         $aPartitions = chksql($this->oDB->getCol($sSQL));
         if (!$this->bNoPartitions) $aPartitions[] = 0;
@@ -800,17 +796,17 @@ class SetupFunctions
         if (!file_exists($sFilename)) fail('unable to find '.$sFilename);
 
         $sCMD = 'psql -p '.$this->aDSNInfo['port'].' -d '.$this->aDSNInfo['database'];
-        if (!$this->sVerbose) {
+        if (!$this->bVerbose) {
             $sCMD .= ' -q';
         }
-        if (isset($this->aDSNInfo['hostspec']) && $this->aDSNInfo['hostspec']) {
+        if (isset($this->aDSNInfo['hostspec'])) {
             $sCMD .= ' -h '.$this->aDSNInfo['hostspec'];
         }
-        if (isset($this->aDSNInfo['username']) && $this->aDSNInfo['username']) {
+        if (isset($this->aDSNInfo['username'])) {
             $sCMD .= ' -U '.$this->aDSNInfo['username'];
         }
         $aProcEnv = null;
-        if (isset($this->aDSNInfo['password']) && $this->aDSNInfo['password']) {
+        if (isset($this->aDSNInfo['password'])) {
             $aProcEnv = array_merge(array('PGPASSWORD' => $this->aDSNInfo['password']), $_ENV);
         }
         $ahGzipPipes = null;
@@ -859,5 +855,47 @@ class SetupFunctions
             $sSql = str_replace($sTemplate, '', $sSql);
         }
         return $sSql;
+    }
+
+    private function runWithPgEnv($sCmd)
+    {
+        if ($this->bVerbose) {
+            echo "Execute: $sCmd\n";
+        }
+
+        $aProcEnv = null;
+
+        if (isset($this->aDSNInfo['password'])) {
+            $aProcEnv = array_merge(array('PGPASSWORD' => $this->aDSNInfo['password']), $_ENV);
+        }
+
+        return runWithEnv($sCmd, $aProcEnv);
+    }
+
+    /**
+     * Execute the SQL command on the open database.
+     *
+     * @param string $sSQL SQL command to execute.
+     *
+     * @return null
+     *
+     * @pre connect() must have been called.
+     */
+    private function pgExec($sSQL)
+    {
+        if (!pg_query($this->oDB->connection, $sSQL)) {
+            fail(pg_last_error($this->oDB->connection));
+        }
+    }
+
+    /**
+     * Check if the database is in reverse-only mode.
+     *
+     * @return True if there is no search_name table and infrastructure.
+     */
+    private function dbReverseOnly()
+    {
+        $sSQL = "SELECT count(*) FROM pg_tables WHERE tablename = 'search_name'";
+        return !(chksql($this->oDB->getOne($sSQL)));
     }
 }

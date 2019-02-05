@@ -1,7 +1,5 @@
 <?php
-@define('CONST_ConnectionBucket_PageType', 'Search');
 
-require_once(dirname(dirname(__FILE__)).'/settings/settings.php');
 require_once(CONST_BasePath.'/lib/init-website.php');
 require_once(CONST_BasePath.'/lib/log.php');
 require_once(CONST_BasePath.'/lib/Geocode.php');
@@ -27,6 +25,7 @@ if (CONST_Search_ReversePlanForAll
 
 // Format for output
 $sOutputFormat = $oParams->getSet('format', array('html', 'xml', 'json', 'jsonv2', 'geojson', 'geocodejson'), 'html');
+set_exception_handler_by_format($sOutputFormat);
 
 $sForcedGeometry = ($sOutputFormat == 'html') ? 'geojson' : null;
 $oGeocode->loadParamArray($oParams, $sForcedGeometry);

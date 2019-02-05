@@ -1,7 +1,5 @@
 <?php
-@define('CONST_ConnectionBucket_PageType', 'Reverse');
 
-require_once(dirname(dirname(__FILE__)).'/settings/settings.php');
 require_once(CONST_BasePath.'/lib/init-website.php');
 require_once(CONST_BasePath.'/lib/log.php');
 require_once(CONST_BasePath.'/lib/PlaceLookup.php');
@@ -12,6 +10,7 @@ $oParams = new Nominatim\ParameterParser();
 
 // Format for output
 $sOutputFormat = $oParams->getSet('format', array('xml', 'json', 'geojson'), 'xml');
+set_exception_handler_by_format($sOutputFormat);
 
 // Preferred language
 $aLangPrefOrder = $oParams->getPreferredLanguages();

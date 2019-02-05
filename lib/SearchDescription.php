@@ -448,11 +448,18 @@ class SearchDescription
 
             //now search for housenumber, if housenumber provided
             if ($this->sHouseNumber && !empty($aResults)) {
-                $aNamedPlaceIDs = $aResults;
-                $aResults = $this->queryHouseNumber($oDB, $aNamedPlaceIDs);
+                // Downgrade the rank of the street results, they are missing
+                // the housenumber.
+                foreach ($aResults as $oRes) {
+                    $oRes->iResultRank++;
+                }
 
-                if (empty($aResults) && $this->looksLikeFullAddress()) {
-                    $aResults = $aNamedPlaceIDs;
+                $aHnResults = $this->queryHouseNumber($oDB, $aResults);
+
+                if (!empty($aHnResults)) {
+                    foreach ($aHnResults as $oRes) {
+                        $aResults[$oRes->iId] = $oRes;
+                    }
                 }
             }
 
@@ -469,16 +476,13 @@ class SearchDescription
             if ($sPlaceIds) {
                 $sSQL = 'SELECT place_id FROM placex';
                 $sSQL .= ' WHERE place_id in ('.$sPlaceIds.')';
-                $sSQL .= " AND postcode = '".$this->sPostcode."'";
+                $sSQL .= " AND postcode != '".$this->sPostcode."'";
                 Debug::printSQL($sSQL);
                 $aFilteredPlaceIDs = chksql($oDB->getCol($sSQL));
                 if ($aFilteredPlaceIDs) {
-                    $aNewResults = array();
                     foreach ($aFilteredPlaceIDs as $iPlaceId) {
-                        $aNewResults[$iPlaceId] = $aResults[$iPlaceId];
+                        $aResults[$iPlaceId]->iResultRank++;
                     }
-                    $aResults = $aNewResults;
-                    Debug::printVar('Place IDs after postcode filtering', $aResults);
                 }
             }
         }

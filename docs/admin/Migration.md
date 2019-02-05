@@ -4,7 +4,31 @@ This page describes database migrations necessary to update existing databases
 to newer versions of Nominatim.
 
 SQL statements should be executed from the postgres commandline. Execute
-`psql nominiatim` to enter command line mode.
+`psql nominatim` to enter command line mode.
+
+
+## 3.2.0 -> master
+
+### Natural Earth country boundaries no longer needed as fallback
+
+```
+DROP TABLE country_naturalearthdata;
+```
+
+Finally, update all SQL functions:
+
+```sh
+./utils/setup.php --create-functions --enable-diff-updates --create-partition-functions
+```
+
+### Configurable Address Levels
+
+The new configurable address levels require a new table. Create it with the
+following command:
+
+```sh
+./utils/update.php --update-address-levels
+```
 
 ## 3.1.0 -> 3.2.0
 

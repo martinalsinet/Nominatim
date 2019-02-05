@@ -561,26 +561,10 @@ BEGIN
     RETURN nearcountry.country_code;
   END LOOP;
 
--- RAISE WARNING 'natural earth: %', ST_AsText(place_centre);
-
-  -- Natural earth data
-  FOR nearcountry IN select country_code from country_naturalearthdata where st_covers(geometry, place_centre) limit 1
-  LOOP
-    RETURN nearcountry.country_code;
-  END LOOP;
-
 -- RAISE WARNING 'near osm fallback: %', ST_AsText(place_centre);
 
   -- 
   FOR nearcountry IN select country_code from country_osm_grid where st_dwithin(geometry, place_centre, 0.5) order by st_distance(geometry, place_centre) asc, area asc limit 1
-  LOOP
-    RETURN nearcountry.country_code;
-  END LOOP;
-
--- RAISE WARNING 'near natural earth: %', ST_AsText(place_centre);
-
-  -- Natural earth data 
-  FOR nearcountry IN select country_code from country_naturalearthdata where st_dwithin(geometry, place_centre, 0.5) limit 1
   LOOP
     RETURN nearcountry.country_code;
   END LOOP;
@@ -817,11 +801,12 @@ DECLARE
   i INTEGER;
   postcode TEXT;
   result BOOLEAN;
+  is_area BOOLEAN;
   country_code VARCHAR(2);
   default_language VARCHAR(10);
   diameter FLOAT;
   classtable TEXT;
-  line RECORD;
+  classtype TEXT;
 BEGIN
   --DEBUG: RAISE WARNING '% % % %',NEW.osm_type,NEW.osm_id,NEW.class,NEW.type;
 
@@ -848,144 +833,74 @@ BEGIN
   IF NEW.osm_type = 'X' THEN
     -- E'X'ternal records should already be in the right format so do nothing
   ELSE
-    NEW.rank_search := 30;
-    NEW.rank_address := NEW.rank_search;
+    is_area := ST_GeometryType(NEW.geometry) IN ('ST_Polygon','ST_MultiPolygon');
 
-    -- By doing in postgres we have the country available to us - currently only used for postcode
-    IF NEW.class in ('place','boundary') AND NEW.type in ('postcode','postal_code') THEN
+    IF NEW.class in ('place','boundary')
+       AND NEW.type in ('postcode','postal_code') THEN
 
-        IF NEW.address IS NULL OR NOT NEW.address ? 'postcode' THEN
-            -- most likely just a part of a multipolygon postcode boundary, throw it away
-            RETURN NULL;
-        END IF;
-
-        NEW.name := hstore('ref', NEW.address->'postcode');
-
-        SELECT * FROM get_postcode_rank(NEW.country_code, NEW.address->'postcode')
-          INTO NEW.rank_search, NEW.rank_address;
-
-        IF NOT ST_GeometryType(NEW.geometry) IN ('ST_Polygon','ST_MultiPolygon') THEN
-            NEW.rank_address := 0;
-        END IF;
-
-    ELSEIF NEW.class = 'place' THEN
-      IF NEW.type in ('continent') THEN
-        NEW.rank_search := 2;
-        NEW.rank_address := NEW.rank_search;
-        NEW.country_code := NULL;
-      ELSEIF NEW.type in ('sea') THEN
-        NEW.rank_search := 2;
-        NEW.rank_address := 0;
-        NEW.country_code := NULL;
-      ELSEIF NEW.type in ('country') THEN
-        NEW.rank_search := 4;
-        NEW.rank_address := NEW.rank_search;
-      ELSEIF NEW.type in ('state') THEN
-        NEW.rank_search := 8;
-        NEW.rank_address := NEW.rank_search;
-      ELSEIF NEW.type in ('region') THEN
-        NEW.rank_search := 18; -- dropped from previous value of 10
-        NEW.rank_address := 0; -- So badly miss-used that better to just drop it!
-      ELSEIF NEW.type in ('county') THEN
-        NEW.rank_search := 12;
-        NEW.rank_address := NEW.rank_search;
-      ELSEIF NEW.type in ('city') THEN
-        NEW.rank_search := 16;
-        NEW.rank_address := NEW.rank_search;
-      ELSEIF NEW.type in ('island') THEN
-        NEW.rank_search := 17;
-        NEW.rank_address := 0;
-      ELSEIF NEW.type in ('town') THEN
-        NEW.rank_search := 18;
-        NEW.rank_address := 16;
-      ELSEIF NEW.type in ('village','hamlet','municipality','district','unincorporated_area','borough') THEN
-        NEW.rank_search := 19;
-        NEW.rank_address := 16;
-      ELSEIF NEW.type in ('suburb','croft','subdivision','isolated_dwelling') THEN
-        NEW.rank_search := 20;
-        NEW.rank_address := NEW.rank_search;
-      ELSEIF NEW.type in ('farm','locality','islet','mountain_pass') THEN
-        NEW.rank_search := 20;
-        NEW.rank_address := 0;
-        -- Irish townlands, tagged as place=locality and locality=townland
-        IF (NEW.extratags -> 'locality') = 'townland' THEN
-          NEW.rank_address := 20;
-        END IF;
-      ELSEIF NEW.type in ('neighbourhood') THEN
-        NEW.rank_search := 22;
-        NEW.rank_address := 22;
-      ELSEIF NEW.type in ('house','building') THEN
-        NEW.rank_search := 30;
-        NEW.rank_address := NEW.rank_search;
-      ELSEIF NEW.type in ('houses') THEN
-        -- can't guarantee all required nodes loaded yet due to caching in osm2pgsql
-        NEW.rank_search := 28;
-        NEW.rank_address := 0;
+      IF NEW.address IS NULL OR NOT NEW.address ? 'postcode' THEN
+          -- most likely just a part of a multipolygon postcode boundary, throw it away
+          RETURN NULL;
       END IF;
 
-    ELSEIF NEW.class = 'boundary' THEN
-      IF ST_GeometryType(NEW.geometry) NOT IN ('ST_Polygon','ST_MultiPolygon') THEN
---        RAISE WARNING 'invalid boundary %',NEW.osm_id;
+      NEW.name := hstore('ref', NEW.address->'postcode');
+
+      SELECT * FROM get_postcode_rank(NEW.country_code, NEW.address->'postcode')
+        INTO NEW.rank_search, NEW.rank_address;
+
+      IF NOT is_area THEN
+          NEW.rank_address := 0;
+      END IF;
+    ELSEIF NEW.class = 'boundary' AND NOT is_area THEN
         return NULL;
-      END IF;
-      NEW.rank_search := NEW.admin_level * 2;
-      IF NEW.type = 'administrative' THEN
-        NEW.rank_address := NEW.rank_search;
-      ELSE
-        NEW.rank_address := 0;
-      END IF;
-    ELSEIF NEW.class = 'landuse' AND ST_GeometryType(NEW.geometry) in ('ST_Polygon','ST_MultiPolygon') THEN
-      NEW.rank_search := 22;
-      IF NEW.type in ('residential', 'farm', 'farmyard', 'industrial', 'commercial', 'allotments', 'retail') THEN
-        NEW.rank_address := NEW.rank_search;
-      ELSE
-        NEW.rank_address := 0;
-      END IF;
-    ELSEIF NEW.class = 'leisure' and NEW.type in ('park') THEN
-      NEW.rank_search := 24;
-      NEW.rank_address := 0;
-    ELSEIF NEW.class = 'natural' and NEW.type in ('peak','volcano','mountain_range') THEN
-      NEW.rank_search := 18;
-      NEW.rank_address := 0;
-    ELSEIF NEW.class = 'natural' and NEW.type = 'sea' THEN
-      NEW.rank_search := 4;
-      NEW.rank_address := NEW.rank_search;
-    -- any feature more than 5 square miles is probably worth indexing
-    ELSEIF ST_GeometryType(NEW.geometry) in ('ST_Polygon','ST_MultiPolygon') AND ST_Area(NEW.geometry) > 0.1 THEN
-      NEW.rank_search := 22;
-      NEW.rank_address := 0;
+    ELSEIF NEW.class = 'boundary' AND NEW.type = 'administrative'
+           AND NEW.admin_level <= 4 AND NEW.osm_type = 'W' THEN
+        return NULL;
     ELSEIF NEW.class = 'railway' AND NEW.type in ('rail') THEN
-      RETURN NULL;
-    ELSEIF NEW.class = 'waterway' THEN
-      IF NEW.osm_type = 'R' THEN
-        NEW.rank_search := 16;
+        return NULL;
+    ELSEIF NEW.osm_type = 'N' AND NEW.class = 'highway' THEN
+        NEW.rank_search = 30;
+        NEW.rank_address = 0;
+    ELSEIF NEW.class = 'landuse' AND NOT is_area THEN
+        NEW.rank_search = 30;
+        NEW.rank_address = 0;
+    ELSE
+      -- do table lookup stuff
+      IF NEW.class = 'boundary' and NEW.type = 'administrative' THEN
+        classtype = NEW.type || NEW.admin_level::TEXT;
       ELSE
-        NEW.rank_search := 17;
+        classtype = NEW.type;
       END IF;
-      NEW.rank_address := 0;
-    ELSEIF NEW.class = 'highway' AND NEW.osm_type != 'N' AND NEW.type in ('service','cycleway','path','footway','steps','bridleway','motorway_link','primary_link','trunk_link','secondary_link','tertiary_link') THEN
-      NEW.rank_search := 27;
-      NEW.rank_address := NEW.rank_search;
-    ELSEIF NEW.class = 'highway' AND NEW.osm_type != 'N' THEN
-      NEW.rank_search := 26;
-      NEW.rank_address := NEW.rank_search;
-    ELSEIF NEW.class = 'mountain_pass' THEN
-        NEW.rank_search := 20;
-        NEW.rank_address := 0;
+      SELECT l.rank_search, l.rank_address FROM address_levels l
+       WHERE (l.country_code = NEW.country_code or l.country_code is NULL)
+             AND l.class = NEW.class AND (l.type = classtype or l.type is NULL)
+       ORDER BY l.country_code, l.class, l.type LIMIT 1
+        INTO NEW.rank_search, NEW.rank_address;
+
+      IF NEW.rank_search is NULL THEN
+        NEW.rank_search := 30;
+      END IF;
+
+      IF NEW.rank_address is NULL THEN
+        NEW.rank_address := 30;
+      END IF;
     END IF;
 
-  END IF;
+    -- some postcorrections
+    IF NEW.class = 'place' THEN
+      IF NEW.type in ('continent', 'sea', 'country', 'state') AND NEW.osm_type = 'N' THEN
+        NEW.rank_address := 0;
+      END IF;
+    ELSEIF NEW.class = 'waterway' AND NEW.osm_type = 'R' THEN
+        -- Slightly promote waterway relations so that they are processed
+        -- before their members.
+        NEW.rank_search := NEW.rank_search - 1;
+    END IF;
 
-  IF NEW.rank_search > 30 THEN
-    NEW.rank_search := 30;
-  END IF;
+    IF (NEW.extratags -> 'capital') = 'yes' THEN
+      NEW.rank_search := NEW.rank_search - 1;
+    END IF;
 
-  IF NEW.rank_address > 30 THEN
-    NEW.rank_address := 30;
-  END IF;
-
-  IF (NEW.extratags -> 'capital') = 'yes' THEN
-    NEW.rank_search := NEW.rank_search - 1;
   END IF;
 
   -- a country code make no sense below rank 4 (country)
@@ -1306,6 +1221,9 @@ BEGIN
 
   NEW.indexed_date = now();
 
+  IF NOT %REVERSE-ONLY% THEN
+    DELETE from search_name WHERE place_id = NEW.place_id;
+  END IF;
   result := deleteSearchName(NEW.partition, NEW.place_id);
   DELETE FROM place_addressline WHERE place_id = NEW.place_id;
   result := deleteRoad(NEW.partition, NEW.place_id);
@@ -1572,8 +1490,9 @@ BEGIN
     IF NEW.parent_place_id IS NOT NULL THEN
 
       -- Get the details of the parent road
-      select s.country_code, s.name_vector, s.nameaddress_vector from search_name s
-       where s.place_id = NEW.parent_place_id INTO location;
+      SELECT p.country_code, p.postcode FROM placex p
+       WHERE p.place_id = NEW.parent_place_id INTO location;
+
       NEW.country_code := location.country_code;
       --DEBUG: RAISE WARNING 'Got parent details from search name';
 
@@ -1582,7 +1501,7 @@ BEGIN
           IF NEW.address is not null AND NEW.address ? 'postcode' THEN
               NEW.postcode = upper(trim(NEW.address->'postcode'));
           ELSE
-             SELECT postcode FROM placex WHERE place_id = NEW.parent_place_id INTO NEW.postcode;
+             NEW.postcode := location.postcode;
           END IF;
           IF NEW.postcode is null THEN
             NEW.postcode := get_nearest_postcode(NEW.country_code, place_centroid);
@@ -1595,21 +1514,34 @@ BEGIN
         return NEW;
       END IF;
 
-      -- Merge address from parent
-      nameaddress_vector := array_merge(nameaddress_vector, location.nameaddress_vector);
-      nameaddress_vector := array_merge(nameaddress_vector, location.name_vector);
-
       -- Performance, it would be more acurate to do all the rest of the import
       -- process but it takes too long
       -- Just be happy with inheriting from parent road only
-
       IF NEW.rank_search <= 25 and NEW.rank_address > 0 THEN
         result := add_location(NEW.place_id, NEW.country_code, NEW.partition, name_vector, NEW.rank_search, NEW.rank_address, upper(trim(NEW.address->'postcode')), NEW.geometry);
         --DEBUG: RAISE WARNING 'Place added to location table';
       END IF;
 
-      result := insertSearchName(NEW.partition, NEW.place_id, NEW.country_code, name_vector, nameaddress_vector, NEW.rank_search, NEW.rank_address, NEW.importance, place_centroid, NEW.geometry);
-      --DEBUG: RAISE WARNING 'Place added to search table';
+      result := insertSearchName(NEW.partition, NEW.place_id, name_vector,
+                                 NEW.rank_search, NEW.rank_address, NEW.geometry);
+
+      IF NOT %REVERSE-ONLY% THEN
+          -- Merge address from parent
+          SELECT s.name_vector, s.nameaddress_vector FROM search_name s
+           WHERE s.place_id = NEW.parent_place_id INTO location;
+
+          nameaddress_vector := array_merge(nameaddress_vector,
+                                            location.nameaddress_vector);
+          nameaddress_vector := array_merge(nameaddress_vector, location.name_vector);
+
+          INSERT INTO search_name (place_id, search_rank, address_rank,
+                                   importance, country_code, name_vector,
+                                   nameaddress_vector, centroid)
+                 VALUES (NEW.place_id, NEW.rank_search, NEW.rank_address,
+                         NEW.importance, NEW.country_code, name_vector,
+                         nameaddress_vector, place_centroid);
+          --DEBUG: RAISE WARNING 'Place added to search table';
+        END IF;
 
       return NEW;
     END IF;
@@ -1795,9 +1727,11 @@ BEGIN
         IF address_street_word_id IS NOT NULL AND NOT(ARRAY[address_street_word_id] <@ isin_tokens) THEN
           isin_tokens := isin_tokens || address_street_word_id;
         END IF;
-        address_street_word_id := get_word_id(make_standard_name(addr_item.value));
-        IF address_street_word_id IS NOT NULL THEN
-          nameaddress_vector := array_merge(nameaddress_vector, ARRAY[address_street_word_id]);
+        IF NOT %REVERSE-ONLY% THEN
+          address_street_word_id := get_word_id(make_standard_name(addr_item.value));
+          IF address_street_word_id IS NOT NULL THEN
+            nameaddress_vector := array_merge(nameaddress_vector, ARRAY[address_street_word_id]);
+          END IF;
         END IF;
       END IF;
       IF addr_item.key = 'is_in' THEN
@@ -1811,16 +1745,20 @@ BEGIN
             END IF;
 
             -- merge word into address vector
-            address_street_word_id := get_word_id(make_standard_name(isin[i]));
-            IF address_street_word_id IS NOT NULL THEN
-              nameaddress_vector := array_merge(nameaddress_vector, ARRAY[address_street_word_id]);
+            IF NOT %REVERSE-ONLY% THEN
+              address_street_word_id := get_word_id(make_standard_name(isin[i]));
+              IF address_street_word_id IS NOT NULL THEN
+                nameaddress_vector := array_merge(nameaddress_vector, ARRAY[address_street_word_id]);
+              END IF;
             END IF;
           END LOOP;
         END IF;
       END IF;
     END LOOP;
   END IF;
-  nameaddress_vector := array_merge(nameaddress_vector, isin_tokens);
+  IF NOT %REVERSE-ONLY% THEN
+    nameaddress_vector := array_merge(nameaddress_vector, isin_tokens);
+  END IF;
 
 -- RAISE WARNING 'ISIN: %', isin_tokens;
 
@@ -1869,7 +1807,7 @@ BEGIN
 
       -- RAISE WARNING '% isaddress: %', location.place_id, location_isaddress;
       -- Add it to the list of search terms
-      IF location.rank_search > 4 THEN
+      IF NOT %REVERSE-ONLY% AND location.rank_search > 4 THEN
           nameaddress_vector := array_merge(nameaddress_vector, location.keywords::integer[]);
       END IF;
       INSERT INTO place_addressline (place_id, address_place_id, fromarea, isaddress, distance, cached_rank_address)
@@ -1923,8 +1861,18 @@ BEGIN
       --DEBUG: RAISE WARNING 'insert into road location table (full)';
     END IF;
 
-    result := insertSearchName(NEW.partition, NEW.place_id, NEW.country_code, name_vector, nameaddress_vector, NEW.rank_search, NEW.rank_address, NEW.importance, place_centroid, NEW.geometry);
-    --DEBUG: RAISE WARNING 'added to serach name (full)';
+    result := insertSearchName(NEW.partition, NEW.place_id, name_vector,
+                               NEW.rank_search, NEW.rank_address, NEW.geometry);
+    --DEBUG: RAISE WARNING 'added to search name (full)';
+
+    IF NOT %REVERSE-ONLY% THEN
+        INSERT INTO search_name (place_id, search_rank, address_rank,
+                                 importance, country_code, name_vector,
+                                 nameaddress_vector, centroid)
+               VALUES (NEW.place_id, NEW.rank_search, NEW.rank_address,
+                       NEW.importance, NEW.country_code, name_vector,
+                       nameaddress_vector, place_centroid);
+    END IF;
 
   END IF;
 
@@ -1983,6 +1931,9 @@ BEGIN
   --DEBUG: RAISE WARNING 'placex_delete:09 % %',OLD.osm_type,OLD.osm_id;
 
   IF OLD.name is not null THEN
+    IF NOT %REVERSE-ONLY% THEN
+      DELETE from search_name WHERE place_id = OLD.place_id;
+    END IF;
     b := deleteSearchName(OLD.partition, OLD.place_id);
   END IF;
 
